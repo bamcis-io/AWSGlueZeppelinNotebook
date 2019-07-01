@@ -1,0 +1,113 @@
+FROM amazonlinux:2
+
+LABEL maintainer="Michael Haken <michael.haken@outlook.com>"
+
+ARG ZEPPELIN_VERSION="0.7.3"
+ARG ZEPPELIN_USER="zeppelin"
+ARG ZEPPELIN_URL="http://archive.apache.org/dist/zeppelin/zeppelin-${ZEPPELIN_VERSION}/zeppelin-${ZEPPELIN_VERSION}-bin-netinst.tgz"
+ARG ZEPPELIN_HOME="/opt/zeppelin"
+ARG SHIRO_VERSION="1.4.0"
+ARG SHIRO_HASHER_URL="http://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/${SHIRO_VERSION}/shiro-tools-hasher-${SHIRO_VERSION}-cli.jar"
+
+ENV PATH="${ZEPPELIN_HOME}/bin:${PATH}" \
+    ZEPPELIN_USER="${ZEPPELIN_USER}" \
+    ZEPPELIN_HOME="${ZEPPELIN_HOME}" \
+    ZEPPELIN_VERSION="${ZEPPELIN_VERSION}" \
+    SHIRO_HASHER="/opt/shiro/shiro-tools-hasher-${SHIRO_VERSION}-cli.jar"
+
+SHELL ["/bin/bash", "-c"]
+
+RUN if [ -z "${ZEPPELIN_VERSION}" ]; then \
+	echo "ZEPPELIN_VERSION must be set." \
+	&& exit 1; \
+    fi
+
+	# Enable the yum repository in Amazon Linux 2. 
+RUN amazon-linux-extras enable corretto8 \
+    # Need shadow-utils for user management
+    # Hostname is used by Zeppelin
+	# Java JRE used by Zeppelin
+	# openssh used to tunnel to the glue dev endpoint
+    && yum install -y java-1.8.0-amazon-corretto wget shadow-utils tar openssh-clients hostname \  
+    #
+	# Make sure JAVA_HOME and ZEPPELIN_HOME is included for all bash users
+    #
+    && echo "export JAVA_HOME=${JAVA_HOME}" > /etc/profile.d/java.sh \
+    && echo "export ZEPPELIN_HOME=${ZEPPELIN_HOME}" > /etc/profile.d/zeppelin.sh \
+    #
+	# Add the group and user for running the hadoop services
+	#
+	&& groupadd --system zeppelin \
+	# Use -gecos "" to bypass prompts
+	&& useradd --system --gid zeppelin --home /home/"${ZEPPELIN_USER}" --shell /bin/bash "${ZEPPELIN_USER}" \
+    && usermod -p '*' "${ZEPPELIN_USER}" \
+    && mkdir -p "/home/${ZEPPELIN_USER}" \
+    #
+	# Make sure the zeppelin account has access to all of its content
+	#
+	&& chown --recursive "${ZEPPELIN_USER}" /home/"${ZEPPELIN_USER}" \
+    && chmod --recursive 0700 /home/"${ZEPPELIN_USER}" \
+    #
+	# Add these environment variables for hdadmin to use from bash and shell
+	#
+	&& echo "export ZEPPELIN_HOME=${ZEPPELIN_HOME}" >> /home/"${ZEPPELIN_USER}"/.profile \
+	&& echo "export PATH=${PATH}" >> /home/"${ZEPPELIN_USER}"/.profile \
+    && echo "export JAVA_HOME=${JAVA_HOME}" >> /home/"${ZEPPELIN_USER}"/.profile \
+    #
+	# Create the directories for zeppelin
+	#
+    && ZEPPELIN_PARENT_DIR="$(dirname ${ZEPPELIN_HOME})" \
+    && ZEPPELIN_DIR="${ZEPPELIN_PARENT_DIR}/zeppelin-${ZEPPELIN_VERSION}" \
+    && mkdir -p "${ZEPPELIN_PARENT_DIR}" \
+    && mkdir -p "${ZEPPELIN_DIR}" \
+    #
+	# -O- output payload to stdout, and use -q to supress all wget
+	# output, so only tar file is sent down the pipeline
+	#
+    && wget -qO- "${ZEPPELIN_URL}" \
+	#
+	# -f - specifies that the archive location is from the pipeline
+    # strip the leading directory name from the files
+	#
+    | tar -zx -f - --directory "${ZEPPELIN_DIR}" --strip-components=1 \
+    #
+    # Create a symlink to the folder
+    #
+    && ln -s "${ZEPPELIN_DIR}" "${ZEPPELIN_HOME}" \
+    #
+    # Only need the spark interpreter for AWS Glue
+    #
+    && rm -rf "${ZEPPELIN_HOME}/interpreter/spark" \
+    && "${ZEPPELIN_HOME}/bin/install-interpreter.sh" --name spark --artifact org.apache.zeppelin:spark-interpreter:0.8.1 \
+    #
+    # Get the shiro password hasher
+    # 
+    && mkdir -p /opt/shiro \
+    && wget --directory-prefix /opt/shiro "${SHIRO_HASHER_URL}" \
+    #
+    # Do some cleanup
+    #
+    && yum remove -y wget tar shadow-utils \
+    && yum clean all 
+    
+COPY entrypoint.sh "/var/zeppelin/entrypoint.sh"
+COPY interpreter.json "${ZEPPELIN_HOME}/conf"
+COPY shiro.ini "${ZEPPELIN_HOME}/conf"
+COPY zeppelin-site.xml "${ZEPPELIN_HOME}/conf"
+
+    #
+	# Make sure the zeppelin user and zeppelin group owns all of the necessary directories
+	# Have to add the / after zeppelin_home because it is a symlink and chown won't
+	# recurse the symlink
+	#
+RUN chown --recursive "${ZEPPELIN_USER}":zeppelin "${ZEPPELIN_HOME}" "${ZEPPELIN_HOME}/" \
+    && chmod --recursive 0774 "${ZEPPELIN_HOME}" \
+    #
+    # Make the entrypoint script executable
+    #
+    && chmod +x /var/zeppelin/entrypoint.sh 
+
+
+ENTRYPOINT ["/var/zeppelin/entrypoint.sh"]
+
+EXPOSE 8080 8443 9007 

@@ -1,0 +1,18 @@
+version: "3.7"
+services:
+    zeppelin:
+        image: bamcis/zeppelin-amazonlinux2:latest
+        container_name: zeppelin
+        restart: always
+        ports:
+        - 8080:8080/tcp
+        - 9007:9007/tcp
+        - 8443:8443/tcp
+        environment:
+            DEV_ENDPOINT: ec2-1-2-3-4.compute-1.amazonaws.com
+            USERNAME: admin
+            PASSWORD: <password>
+        volumes:
+            - /Users/mhaken/.ssh/id_rsa:/ssh/glue.pem
+        networks:
+        - default
